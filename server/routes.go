@@ -1142,26 +1142,28 @@ func streamResponse(c *gin.Context, ch chan any) {
 func (s *Server) ProcessHandler(c *gin.Context) {
 	models := []api.ModelResponse{}
 
-	for _, v := range s.sched.loaded {
-		model := v.model
-		modelDetails := api.ModelDetails{
-			Format:            model.Config.ModelFormat,
-			Family:            model.Config.ModelFamily,
-			Families:          model.Config.ModelFamilies,
-			ParameterSize:     model.Config.ModelType,
-			QuantizationLevel: model.Config.FileType,
-		}
+	for _, runners := range s.sched.loaded {
+		for _, v := range runners {
+			model := v.model
+			modelDetails := api.ModelDetails{
+				Format:            model.Config.ModelFormat,
+				Family:            model.Config.ModelFamily,
+				Families:          model.Config.ModelFamilies,
+				ParameterSize:     model.Config.ModelType,
+				QuantizationLevel: model.Config.FileType,
+			}
 
-		mr := api.ModelResponse{
-			Model:     model.ShortName,
-			Name:      model.ShortName,
-			Size:      int64(v.estimatedTotal),
-			SizeVRAM:  int64(v.estimatedVRAM),
-			Digest:    model.Digest,
-			Details:   modelDetails,
-			ExpiresAt: v.expiresAt,
+			mr := api.ModelResponse{
+				Model:     model.ShortName,
+				Name:      model.ShortName,
+				Size:      int64(v.estimatedTotal),
+				SizeVRAM:  int64(v.estimatedVRAM),
+				Digest:    model.Digest,
+				Details:   modelDetails,
+				ExpiresAt: v.expiresAt,
+			}
+			models = append(models, mr)
 		}
-		models = append(models, mr)
 	}
 
 	c.JSON(http.StatusOK, api.ListResponse{Models: models})

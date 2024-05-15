@@ -31,11 +31,11 @@ type LlmRequest struct {
 
 type Scheduler struct {
 	pendingReqCh  chan *LlmRequest
-	finishedReqCh chan *LlmRequest
+	finishedReqCh chan *runnerRef
 	expiredCh     chan *runnerRef
 	unloadedCh    chan interface{}
 
-	loaded   map[string]*runnerRef
+	loaded   map[string][]*runnerRef
 	loadedMu sync.Mutex
 
 	loadFn      func(req *LlmRequest, ggml *llm.GGML, gpus gpu.GpuInfoList)
@@ -48,10 +48,10 @@ var ErrMaxQueue = fmt.Errorf("server busy, please try again.  maximum pending re
 func InitScheduler(ctx context.Context) *Scheduler {
 	sched := &Scheduler{
 		pendingReqCh:  make(chan *LlmRequest, envconfig.MaxQueuedRequests),
-		finishedReqCh: make(chan *LlmRequest, envconfig.MaxQueuedRequests),
+		finishedReqCh: make(chan *runnerRef, envconfig.MaxQueuedRequests),
 		expiredCh:     make(chan *runnerRef, envconfig.MaxQueuedRequests),
 		unloadedCh:    make(chan interface{}, envconfig.MaxQueuedRequests),
-		loaded:        make(map[string]*runnerRef),
+		loaded:        make(map[string][]*runnerRef),
 		newServerFn:   llm.NewLlamaServer,
 		getGpuFn:      gpu.GetGPUInfo,
 	}
@@ -114,9 +114,21 @@ func (s *Scheduler) processPending(ctx context.Context) {
 			for {
 				var runnerToExpire *runnerRef
 				s.loadedMu.Lock()
-				runner := s.loaded[pending.model.ModelPath]
-				loadedCount := len(s.loaded)
+				runners := s.loaded[pending.model.ModelPath]
+				loadedCount := 0
+				for _, runnerList := range s.loaded {
+					loadedCount += len(runnerList)
+				}
 				s.loadedMu.Unlock()
+				var runner *runnerRef = nil
+				if len(runners) > 0 {
+					for _, r := range runners {
+						if !r.isAtCapacity() {
+							runner = r
+							break
+						}
+					}
+				}
 				if runner != nil {
 					if runner.needsReload(ctx, pending) {
 						runnerToExpire = runner
@@ -215,12 +227,12 @@ func (s *Scheduler) processCompleted(ctx context.Context) {
 		case <-ctx.Done():
 			slog.Debug("shutting down scheduler completed loop")
 			return
-		case finished := <-s.finishedReqCh:
+		case finishedRunner := <-s.finishedReqCh:
 			s.loadedMu.Lock()
-			runner := s.loaded[finished.model.ModelPath]
+			runner := finishedRunner
 			s.loadedMu.Unlock()
 			if runner == nil {
-				slog.Error("finished requeset signal received after model unloaded", "modelPath", finished.model.ModelPath)
+				slog.Error("finished requeset signal received after model unloaded", "modelPath", finishedRunner.model.ModelPath)
 				continue
 			}
 			runner.refMu.Lock()
@@ -274,7 +286,21 @@ func (s *Scheduler) processCompleted(ctx context.Context) {
 			slog.Debug("got lock to unload", "modelPath", runner.modelPath)
 			finished := runner.waitForVRAMRecovery()
 			runner.unload()
-			delete(s.loaded, runner.modelPath)
+
+			modelPath := runner.modelPath
+			// Find the index of the runner in the slice
+			for i, r := range s.loaded[modelPath] {
+				if r == runner {
+					// Remove the runner from the slice
+					s.loaded[modelPath] = append(s.loaded[modelPath][:i], s.loaded[modelPath][i+1:]...)
+					break
+				}
+			}
+
+			// If the slice is now empty, delete the entry from the map
+			if len(s.loaded[modelPath]) == 0 {
+				delete(s.loaded, modelPath)
+			}
 			s.loadedMu.Unlock()
 			slog.Debug("runner released", "modelPath", runner.modelPath)
 			runner.refMu.Unlock()
@@ -334,8 +360,16 @@ func (s *Scheduler) load(req *LlmRequest, ggml *llm.GGML, gpus gpu.GpuInfoList) 
 	runner.refMu.Lock()
 
 	s.loadedMu.Lock()
-	s.loaded[req.model.ModelPath] = runner
-	slog.Info("loaded runners", "count", len(s.loaded))
+	if _, ok := s.loaded[req.model.ModelPath]; !ok {
+		s.loaded[req.model.ModelPath] = make([]*runnerRef, 0)
+	}
+	s.loaded[req.model.ModelPath] = append(s.loaded[req.model.ModelPath], runner)
+
+	runnerCount := 0
+	for _, runners := range s.loaded {
+		runnerCount += len(runners)
+	}
+	slog.Info("loaded runners", "count", runnerCount)
 	s.loadedMu.Unlock()
 
 	go func() {
@@ -366,26 +400,29 @@ func (s *Scheduler) updateFreeSpace(allGpus gpu.GpuInfoList) {
 	}
 	predMap := map[predKey]uint64{} // Sum up the total predicted usage per GPU for all runners
 	s.loadedMu.Lock()
-	for _, r := range s.loaded {
-		r.refMu.Lock()
-		gpuIDs := make([]string, 0, len(r.gpus))
-		if r.llama != nil {
-
-			// TODO this should be broken down by GPU instead of assuming uniform spread
-			estimatedVRAMPerGPU := r.llama.EstimatedVRAM() / uint64(len(r.gpus))
-			for _, gpu := range r.gpus {
-				gpuIDs = append(gpuIDs, gpu.ID)
-			}
-			for _, gpu := range allGpus {
-				if slices.Contains(gpuIDs, gpu.ID) {
-					predMap[predKey{gpu.Library, gpu.ID}] += estimatedVRAMPerGPU
+	for _, runners := range s.loaded {
+		for _, r := range runners {
+			r.refMu.Lock()
+			gpuIDs := make([]string, 0, len(r.gpus))
+			if r.llama != nil {
+	
+				// TODO this should be broken down by GPU instead of assuming uniform spread
+				estimatedVRAMPerGPU := r.llama.EstimatedVRAM() / uint64(len(r.gpus))
+				for _, gpu := range r.gpus {
+					gpuIDs = append(gpuIDs, gpu.ID)
 				}
+				for _, gpu := range allGpus {
+					if slices.Contains(gpuIDs, gpu.ID) {
+						predMap[predKey{gpu.Library, gpu.ID}] += estimatedVRAMPerGPU
+					}
+				}
+			} else {
+				slog.Warn("unexpected nil runner reference, memory prediction may be incorrect")
 			}
-		} else {
-			slog.Warn("unexpected nil runner reference, memory prediction may be incorrect")
+			r.refMu.Unlock()
 		}
-		r.refMu.Unlock()
 	}
+	
 	s.loadedMu.Unlock()
 
 	// Now that we've summed up all the GPU usage predictions across all the loaded runners, update the gpu list
@@ -583,9 +620,9 @@ func pickBestFitGPUs(req *LlmRequest, ggml *llm.GGML, gpus gpu.GpuInfoList) gpu.
 // findRunnerToUnload finds a runner to unload to make room for a new model
 func (s *Scheduler) findRunnerToUnload() *runnerRef {
 	s.loadedMu.Lock()
-	runnerList := make([]*runnerRef, 0, len(s.loaded))
-	for _, r := range s.loaded {
-		runnerList = append(runnerList, r)
+	runnerList := make([]*runnerRef, 0)
+	for _, runners := range s.loaded {
+		runnerList = append(runnerList, runners...)
 	}
 	s.loadedMu.Unlock()
 
@@ -611,10 +648,12 @@ func (s *Scheduler) findRunnerToUnload() *runnerRef {
 func (s *Scheduler) unloadAllRunners() {
 	s.loadedMu.Lock()
 	defer s.loadedMu.Unlock()
-	for model, runner := range s.loaded {
-		if runner.llama != nil {
-			slog.Debug("shutting down runner", "model", model)
-			runner.llama.Close()
+	for model, runners := range s.loaded {
+		for _, runner := range runners {
+			if runner.llama != nil {
+				slog.Debug("shutting down runner", "model", model)
+				runner.llama.Close()
+			}
 		}
 	}
 }
