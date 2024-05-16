@@ -124,7 +124,7 @@ func (s *Scheduler) processPending(ctx context.Context) {
 				if len(runners) > 0 {
 					var minRef = runners[0].refCount
 					for _, r := range runners {
-						if runner.refCount <= minRef{
+						if r.refCount <= minRef{
 							runner = r
 							minRef = r.refCount
 						}
