@@ -1,4 +1,10 @@
-build-linux-amd64:
+name: build-linux-amd64-manual
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux-amd64:
     environment: release
     runs-on: linux
     env:
@@ -27,6 +33,3 @@ build-linux-amd64:
           path: |
             dist/*linux*
             !dist/*-cov
-    # 添加 workflow_dispatch 触发器
-    on:
-      workflow_dispatch:
