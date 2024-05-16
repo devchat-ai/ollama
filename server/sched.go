@@ -122,10 +122,11 @@ func (s *Scheduler) processPending(ctx context.Context) {
 				s.loadedMu.Unlock()
 				var runner *runnerRef = nil
 				if len(runners) > 0 {
+					var minRef = runners[0].refCount
 					for _, r := range runners {
-						if !r.isAtCapacity() {
+						if runner.refCount <= minRef{
 							runner = r
-							break
+							minRef = r.refCount
 						}
 					}
 				}
@@ -315,7 +316,7 @@ func (s *Scheduler) processCompleted(ctx context.Context) {
 // Complete the pending request and send the runner back to the requester
 // Wires up a finished event after the request context is completed
 // Updates session duration, and resets expiration timer
-func (pending *LlmRequest) useLoadedRunner(runner *runnerRef, finished chan *LlmRequest) {
+func (pending *LlmRequest) useLoadedRunner(runner *runnerRef, finished chan *runnerRef) {
 	runner.refMu.Lock()
 	defer runner.refMu.Unlock()
 	runner.refCount++
@@ -387,7 +388,7 @@ func (s *Scheduler) load(req *LlmRequest, ggml *llm.GGML, gpus gpu.GpuInfoList) 
 		go func() {
 			<-req.ctx.Done()
 			slog.Debug("context for request finished")
-			s.finishedReqCh <- req
+			s.finishedReqCh <- runner
 		}()
 		req.successCh <- runner
 	}()
@@ -463,6 +464,11 @@ type runnerRef struct {
 	model     *Model
 	modelPath string
 	*api.Options
+}
+
+func (r *runnerRef) isAtCapacity() bool {
+	// Implement your capacity check logic here
+	// Return true if the runner is at capacity, false otherwise
 }
 
 // The refMu must already be held when calling unload
