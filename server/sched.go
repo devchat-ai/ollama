@@ -121,17 +121,17 @@ func (s *Scheduler) processPending(ctx context.Context) {
 				}
 				
 				var runner *runnerRef = nil
-				if len(runners) > 0 {
+				if len(runners) > 1 {
 					var minRef = runners[0].refCount
 					for _, r := range runners {
-						if r.refCount <= minRef{
+						if r.refCount <= minRef && r.refCount < uint(envconfig.NumParallel){
 							runner = r
 							minRef = r.refCount
 						}
 					}
 				}
 				s.loadedMu.Unlock()
-				
+
 				if runner != nil {
 					if runner.needsReload(ctx, pending) {
 						runnerToExpire = runner
