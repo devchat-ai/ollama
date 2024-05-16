@@ -329,7 +329,7 @@ func (pending *LlmRequest) useLoadedRunner(runner *runnerRef, finished chan *run
 	go func() {
 		<-pending.ctx.Done()
 		slog.Debug("context for request finished")
-		finished <- pending
+		finished <- runner
 	}()
 }
 
@@ -466,10 +466,6 @@ type runnerRef struct {
 	*api.Options
 }
 
-func (r *runnerRef) isAtCapacity() bool {
-	// Implement your capacity check logic here
-	// Return true if the runner is at capacity, false otherwise
-}
 
 // The refMu must already be held when calling unload
 func (runner *runnerRef) unload() {
