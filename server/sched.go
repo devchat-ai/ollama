@@ -119,7 +119,7 @@ func (s *Scheduler) processPending(ctx context.Context) {
 				for _, runnerList := range s.loaded {
 					loadedCount += len(runnerList)
 				}
-				s.loadedMu.Unlock()
+				
 				var runner *runnerRef = nil
 				if len(runners) > 0 {
 					var minRef = runners[0].refCount
@@ -130,6 +130,8 @@ func (s *Scheduler) processPending(ctx context.Context) {
 						}
 					}
 				}
+				s.loadedMu.Unlock()
+				
 				if runner != nil {
 					if runner.needsReload(ctx, pending) {
 						runnerToExpire = runner
