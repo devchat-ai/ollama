@@ -8,10 +8,6 @@ jobs:
     environment: release
     runs-on: ubuntu-latest
 
-    resources:
-      repository:
-        disk: 100000 # 100GB
-        
     env:
       OLLAMA_SKIP_MANIFEST_CREATE: '1'
       BUILD_ARCH: amd64
